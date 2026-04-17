@@ -33,3 +33,14 @@ The purpose of this package is to evaluate the performance of a Docker-based use
 * Set up a pool of Docker containers, where we have one per instance of code running
   * We could opt for a scheduler based approach where code is dynamically executed on a predefined size set of containers, but that would require the use of a scheduler. We don't use a scheduler for WASM, so no need to use one here
 * Execute a benchmarked test where we create a zpif distribution of which modules receive requests
+
+### Communicaiton Protocol
+
+We will use a very basic protocol to communicate between the two.
+* First byte will denote what the incoming message represents
+  * 0 = sending initial code that the container needs to execute
+  * 1 = sending request (coordinator -> container)
+  * 2 = sending resposne (container -> coordinator)
+  * 3 = sending request (container -> coordinator)
+  * 4 = sending response (coordinator -> container)
+  * 5 = sending error (either way)
