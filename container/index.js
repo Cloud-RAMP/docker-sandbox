@@ -1,32 +1,47 @@
 const net = require('net');
-const socketPath = '/tmp/cloud_ramp_socket';
 
-// Simulate user-defined code execution
+// gather socket number from container arguments
+const socketNumber = process.argv[2];
+if (!socketNumber) {
+  console.error('Error: Please provide a socket number as a command-line argument.');
+  process.exit(1);
+}
+
+// construct socket path
+const socketPath = `/tmp/cloud_ramp/sockets/${socketNumber}`;
 let userCode = null;
+
+// Create a Unix domain socket client
+const client = net.createConnection(socketPath, () => {
+  console.log('Connected to coordinator');
+});
 
 // Define handlers for each message type
 const messageHandlers = {
+  // received initial code to execute
   0: (data) => {
-    // 0 = receiving initial code to execute
     console.log('Received initial code to execute');
+    console.log(data.toString());
     userCode = eval(data.toString()); // Parse the code (ensure it's trusted!)
     console.log('Code loaded successfully');
+    sendMessage(0, "");
   },
+
+  // received a request from the coordinator
   1: (data) => {
-    // 1 = receiving request (coordinator -> container)
     console.log('Received request from coordinator');
     if (userCode && typeof userCode.onMessage === 'function') {
       const response = userCode.onMessage(data.toString());
-      sendMessage(2, response); // Send response (type 2)
+      sendMessage(3, "Some request"); // simulate external request
     } else {
       console.error('No user code loaded or onMessage not defined');
       sendMessage(5, 'Error: No user code loaded or onMessage not defined'); // Send error (type 5)
     }
   },
-  3: (data) => {
-    // 3 = receiving request (container -> coordinator)
-    console.log('Received request from container');
-    // Handle as needed (if applicable)
+  4: (data) => {
+    // Response from coordinator -> container
+    // for simulation purposes, do nothing here
+    return;
   },
   5: (data) => {
     // 5 = receiving error
@@ -34,7 +49,7 @@ const messageHandlers = {
   },
 };
 
-// Function to send messages
+// Send messages with custom protocol
 const sendMessage = (type, payload) => {
   const message = Buffer.concat([
     Buffer.from([type]), // First byte is the message type
@@ -42,11 +57,6 @@ const sendMessage = (type, payload) => {
   ]);
   client.write(message);
 };
-
-// Create a Unix domain socket client
-const client = net.createConnection(socketPath, () => {
-  console.log('Connected to coordinator');
-});
 
 // Handle incoming messages
 client.on('data', (data) => {
