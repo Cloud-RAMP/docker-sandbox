@@ -44,3 +44,4 @@ We will use a very basic protocol to communicate between the two.
   * 3 = sending request (container -> coordinator)
   * 4 = sending response (coordinator -> container)
   * 5 = sending error (either way)
+  * 6 = container done processing (container -> coordinator)

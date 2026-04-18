@@ -1,35 +1,29 @@
 const net = require('net');
 
-// gather socket number from container arguments
-const socketNumber = process.argv[2];
-if (!socketNumber) {
-  console.error('Error: Please provide a socket number as a command-line argument.');
+const host = 'host.docker.internal';
+const port = process.argv[2];
+if (!port) {
+  console.error("Failed to read port argument");
   process.exit(1);
 }
-
-// construct socket path
-const socketPath = `/tmp/cloud_ramp/sockets/${socketNumber}`;
 let userCode = null;
 
-// Create a Unix domain socket client
-const client = net.createConnection(socketPath, () => {
+// Create a TCP client
+const client = net.createConnection({ host, port: port }, () => {
   console.log('Connected to coordinator');
 });
 
 // Define handlers for each message type
 const messageHandlers = {
+
   // received initial code to execute
   0: (data) => {
-    console.log('Received initial code to execute');
-    console.log(data.toString());
-    userCode = eval(data.toString()); // Parse the code (ensure it's trusted!)
-    console.log('Code loaded successfully');
+    userCode = eval(data.toString());
     sendMessage(0, "");
   },
 
   // received a request from the coordinator
   1: (data) => {
-    console.log('Received request from coordinator');
     if (userCode && typeof userCode.onMessage === 'function') {
       const response = userCode.onMessage(data.toString());
       sendMessage(3, "Some request"); // simulate external request
@@ -41,7 +35,7 @@ const messageHandlers = {
   4: (data) => {
     // Response from coordinator -> container
     // for simulation purposes, do nothing here
-    return;
+    sendMessage(6, "Done!");
   },
   5: (data) => {
     // 5 = receiving error
@@ -51,22 +45,43 @@ const messageHandlers = {
 
 // Send messages with custom protocol
 const sendMessage = (type, payload) => {
+  const payloadBuffer = Buffer.from(payload);
+  const length = payloadBuffer.length;
+  
   const message = Buffer.concat([
-    Buffer.from([type]), // First byte is the message type
-    Buffer.from(payload), // Remaining bytes are the payload
+    Buffer.from([type]),                           // 1 byte: message type
+    Buffer.alloc(4),                               // 4 bytes: length (will fill next)
   ]);
-  client.write(message);
+  message.writeUInt32BE(length, 1);                // Write length at offset 1
+  
+  const fullMessage = Buffer.concat([message, payloadBuffer]);
+  client.write(fullMessage);
 };
 
-// Handle incoming messages
-client.on('data', (data) => {
-  const messageType = data[0]; // First byte is the message type
-  const payload = data.slice(1); // Remaining bytes are the payload
+let buffer = Buffer.alloc(0);
 
-  if (messageHandlers[messageType]) {
-    messageHandlers[messageType](payload);
-  } else {
-    console.error(`Unknown message type: ${messageType}`);
+client.on('data', (data) => {
+  buffer = Buffer.concat([buffer, data]);
+  
+  // Process complete messages
+  while (buffer.length >= 5) {
+    const messageType = buffer[0];
+    const length = buffer.readUInt32BE(1);
+    
+    if (buffer.length < 5 + length) {
+      // Not enough data yet
+      break;
+    }
+    
+    const payload = buffer.slice(5, 5 + length);
+    
+    if (messageHandlers[messageType]) {
+      messageHandlers[messageType](payload);
+    } else {
+      console.error(`Unknown message type: ${messageType}`);
+    }
+    
+    buffer = buffer.slice(5 + length);
   }
 });
 
@@ -78,4 +93,8 @@ client.on('end', () => {
 // Handle errors
 client.on('error', (err) => {
   console.error(`Error: ${err.message}`);
+});
+
+client.on('close', (hadError) => {
+    console.log(`Socket fully closed. Error: ${hadError}`);
 });

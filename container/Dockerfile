@@ -6,6 +6,4 @@ WORKDIR /app
 
 COPY . .
 
-RUN mkdir -p /tmp/cloud_ramp/sockets
-
-CMD ["node", "index.js"]
+ENTRYPOINT ["node", "index.js"]

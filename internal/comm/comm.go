@@ -3,114 +3,144 @@ package comm
 import (
 	"fmt"
 	"net"
-	"os"
+	"sync"
+	"time"
+
+	"github.com/Cloud-RAMP/docker-sandbox/internal/config"
 )
 
-// Define the Unix socket path
-const socketPath = "/tmp/cloud_ramp_socket"
+type MockContainerRequest struct {
+	Payload   string
+	Module    string
+	Timestamp time.Time
+}
 
-// Message types
-const (
-	MessageTypeInitialCode = 0 // Sending initial code to the container
-	MessageTypeRequest     = 1 // Sending request (coordinator -> container)
-	MessageTypeResponse    = 2 // Receiving response (container -> coordinator)
-	MessageTypeError       = 5 // Sending/receiving error
-)
+type Container struct {
+	Port         int
+	Mu           *sync.RWMutex
+	LoadedModule string
+	LastRequest  time.Time
+	DataChan     chan MockContainerRequest
+	Conn         net.Conn
+}
 
-// SendMessage sends a message to the container
-func SendMessage(conn net.Conn, messageType byte, payload string) error {
-	// Construct the message: first byte is the type, rest is the payload
-	message := append([]byte{messageType}, []byte(payload)...)
-	_, err := conn.Write(message)
-	if err != nil {
-		return fmt.Errorf("failed to send message: %w", err)
+var containers []Container
+
+func init() {
+	for i := range config.NUM_CONTAINERS {
+		containers = append(containers, Container{
+			Port:         config.BASE_PORT + i,
+			Mu:           &sync.RWMutex{},
+			LoadedModule: "",
+			DataChan:     make(chan MockContainerRequest, 10000),
+		})
 	}
+}
+
+func StartCoordinator() error {
+	var wg sync.WaitGroup
+
+	for i := range config.NUM_CONTAINERS {
+		container := &containers[i]
+		addr := fmt.Sprintf("127.0.0.1:%d", container.Port)
+
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return fmt.Errorf("failed to create TCP socket for container %d: %w", i, err)
+		}
+		defer listener.Close()
+
+		fmt.Printf("Coordinator listening on %s\n", addr)
+
+		wg.Add(1)
+		go func(container *Container, listener net.Listener) {
+			defer wg.Done()
+
+			container.Conn = nil
+			i := 0
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					fmt.Printf("Failed to accept connection on %s: %v\n", addr, err)
+					continue
+				}
+
+				container.Mu.Lock()
+				// Close any existing connection before handling the new one
+				// if container.Conn != nil {
+				// 	container.Conn.Close()
+				// }
+				container.Conn = conn
+				container.Mu.Unlock()
+
+				go handleConnection(conn, container)
+				i++
+			}
+		}(container, listener)
+	}
+
+	wg.Wait()
 	return nil
 }
 
-// HandleResponse processes responses from the container
-func HandleResponse(data []byte) {
-	if len(data) == 0 {
-		fmt.Println("Received empty response")
-		return
+// External facing function to be called by whoever is feeding reqeusts into the system
+//
+// In this case, it will just be the benchmark tester
+func HandleRequest(req MockContainerRequest) error {
+	var container *Container = nil
+
+	for _, c := range containers {
+		c.Mu.RLock()
+		if c.LoadedModule == req.Module {
+			container = &c
+			c.Mu.RUnlock()
+			break
+		}
+		c.Mu.RUnlock()
 	}
 
-	messageType := data[0]      // First byte is the message type
-	payload := string(data[1:]) // Remaining bytes are the payload
+	if container == nil {
+		var lruContainer *Container = nil
+		var oldestTime time.Time
 
-	switch messageType {
-	case MessageTypeResponse:
-		fmt.Printf("Received response from container: %s\n", payload)
-	case MessageTypeError:
-		fmt.Printf("Received error from container: %s\n", payload)
-	default:
-		fmt.Printf("Unknown message type: %d, payload: %s\n", messageType, payload)
-	}
-}
-
-// StartCoordinator starts the coordinator and communicates with the container
-func StartCoordinator() error {
-	// Remove the socket file if it already exists
-	if _, err := os.Stat(socketPath); err == nil {
-		os.Remove(socketPath)
-	}
-
-	// Create a Unix domain socket
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		return fmt.Errorf("failed to create Unix socket: %w", err)
-	}
-	defer listener.Close()
-
-	fmt.Printf("Coordinator listening on %s\n", socketPath)
-
-	for {
-		// Accept a connection from the container
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Printf("Failed to accept connection: %v\n", err)
-			continue
+		for i, c := range containers {
+			c.Mu.RLock()
+			if lruContainer == nil || containers[i].LastRequest.Before(oldestTime) {
+				lruContainer = &containers[i]
+				oldestTime = containers[i].LastRequest
+			}
+			c.Mu.RUnlock()
 		}
 
-		go handleConnection(conn)
+		// Replace LRU container with this module
+		if lruContainer != nil {
+			fmt.Printf("Sending init code to container %s\n", req.Module)
+			lruContainer.Mu.Lock()
+			lruContainer.LoadedModule = req.Module
+			container = lruContainer
+			sendCode(lruContainer.Conn)
+			lruContainer.Mu.Unlock()
+		}
 	}
+
+	// Send the request to the container
+	container.DataChan <- req
+	return nil
 }
 
-func handleConnection(conn net.Conn) {
+// Once the socket connection with the container has opened, read requests and handle them
+func handleConnection(conn net.Conn, container *Container) {
 	defer conn.Close()
 
-	fmt.Println("Container connected")
-
-	// Example: Send initial code to the container
-	initialCode := `
-module.exports = {
-  onMessage: (message) => {
-    return "Processed: " + message;
-  },
-};
-`
-	if err := SendMessage(conn, MessageTypeInitialCode, initialCode); err != nil {
-		fmt.Printf("Failed to send initial code: %v\n", err)
-		return
+	for req := range container.DataChan {
+		container.Mu.Lock()
+		fmt.Printf("Sending request number %s\n", req.Payload)
+		if err := sendRequest(conn, req.Payload); err != nil {
+			fmt.Println("SEND ERROR:", err)
+			fmt.Println("PAYLOAD:", req.Payload)
+			container.Mu.Unlock()
+			return
+		}
+		container.Mu.Unlock()
 	}
-	fmt.Println("Sent initial code to container")
-
-	// Example: Send a request to the container
-	request := "Hello from coordinator!"
-	if err := SendMessage(conn, MessageTypeRequest, request); err != nil {
-		fmt.Printf("Failed to send request: %v\n", err)
-		return
-	}
-	fmt.Println("Sent request to container")
-
-	// Read response from the container
-	buffer := make([]byte, 1024)
-	n, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Printf("Failed to read response: %v\n", err)
-		return
-	}
-
-	// Handle the response
-	HandleResponse(buffer[:n])
 }
