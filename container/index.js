@@ -19,6 +19,7 @@ const messageHandlers = {
   // received initial code to execute
   0: (data) => {
     userCode = eval(data.toString());
+    console.log("Received following code:\n", data.toString());
     sendMessage(0, "");
   },
 

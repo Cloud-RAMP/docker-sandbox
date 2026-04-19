@@ -1,6 +1,5 @@
 module.exports = {
   onMessage: (message) => {
-    console.log("Got message:", message);
     return `Processed message: ${message}`;
   },
 

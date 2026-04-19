@@ -23,12 +23,12 @@ func main() {
 		wg.Done()
 	}()
 
-	time.Sleep(500 * time.Millisecond)
+	// time.Sleep(500 * time.Millisecond)
 	go workers.StartWorkers()
 	time.Sleep(1000 * time.Millisecond)
 
-	fmt.Println()
-	for i := range 5 {
+	// fmt.Println()
+	for i := range 100 {
 		req := comm.MockContainerRequest{
 			Payload: fmt.Sprintf("%d", i),
 			Module:  fmt.Sprintf("%d", i%config.NUM_CONTAINERS),

@@ -15,6 +15,8 @@ import (
 func setup(t testing.TB) {
 	t.Helper()
 
+	// workers.StopWorkers()
+
 	go func() {
 		err := comm.StartCoordinator()
 		if err != nil {
@@ -24,21 +26,12 @@ func setup(t testing.TB) {
 	}()
 
 	time.Sleep(500 * time.Millisecond)
-	go func() {
-		err := workers.StartWorkers()
-		if err != nil {
-			fmt.Println(err)
-			os.Exit(1)
-		}
-	}()
+	workers.StartWorkers()
 
 	time.Sleep(1500 * time.Millisecond)
-
-	t.Cleanup(func() {
-		workers.StopWorkers() // gracefully stop containers
-	})
 }
 
+// BenchmarkSimpleSingleModule-8   	   10000	    229567 ns/op	    2071 B/op	       4 allocs/op
 // Send all requests to one module
 func BenchmarkSimpleSingleModule(b *testing.B) {
 	setup(b)
@@ -54,10 +47,9 @@ func BenchmarkSimpleSingleModule(b *testing.B) {
 			b.Fatal(err)
 		}
 	}
-
-	time.Sleep(10 * time.Millisecond)
 }
 
+// BenchmarkSimpleModuleEviction-8   	    1474	    794842 ns/op	    5086 B/op	      19 allocs/op
 func BenchmarkSimpleModuleEviction(b *testing.B) {
 	setup(b)
 
@@ -77,6 +69,7 @@ func BenchmarkSimpleModuleEviction(b *testing.B) {
 	}
 }
 
+// BenchmarkZipf-8   	    1807	    641591 ns/op	    4147 B/op	      14 allocs/op
 func BenchmarkZipf(b *testing.B) {
 	setup(b)
 

@@ -57,7 +57,6 @@ func StartCoordinator() error {
 			defer wg.Done()
 
 			container.Conn = nil
-			i := 0
 			for {
 				conn, err := listener.Accept()
 				if err != nil {
@@ -67,14 +66,15 @@ func StartCoordinator() error {
 
 				container.Mu.Lock()
 				// Close any existing connection before handling the new one
-				// if container.Conn != nil {
-				// 	container.Conn.Close()
-				// }
+				if container.Conn != nil {
+					close(container.DataChan)
+					container.DataChan = make(chan MockContainerRequest, 10000)
+					container.Conn.Close()
+				}
 				container.Conn = conn
 				container.Mu.Unlock()
 
-				go handleConnection(conn, container)
-				i++
+				go handleConnection(container)
 			}
 		}(container, listener)
 	}
@@ -114,7 +114,6 @@ func HandleRequest(req MockContainerRequest) error {
 
 		// Replace LRU container with this module
 		if lruContainer != nil {
-			fmt.Printf("Sending init code to container %s\n", req.Module)
 			lruContainer.Mu.Lock()
 			lruContainer.LoadedModule = req.Module
 			container = lruContainer
@@ -129,15 +128,12 @@ func HandleRequest(req MockContainerRequest) error {
 }
 
 // Once the socket connection with the container has opened, read requests and handle them
-func handleConnection(conn net.Conn, container *Container) {
-	defer conn.Close()
+func handleConnection(container *Container) {
+	defer container.Conn.Close()
 
 	for req := range container.DataChan {
 		container.Mu.Lock()
-		fmt.Printf("Sending request number %s\n", req.Payload)
-		if err := sendRequest(conn, req.Payload); err != nil {
-			fmt.Println("SEND ERROR:", err)
-			fmt.Println("PAYLOAD:", req.Payload)
+		if err := sendRequest(container.Conn, req.Payload); err != nil {
 			container.Mu.Unlock()
 			return
 		}
